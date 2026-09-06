@@ -71,6 +71,7 @@ static int create_window(const char* title, int width, int height) {
     }
 
     RECT rect;
+
     rect.left = 0;
     rect.top = 0;
     rect.right = width;
@@ -132,6 +133,7 @@ static int create_device(void) {
     }
 
     D3D12_COMMAND_QUEUE_DESC queue_desc;
+
     memset(&queue_desc, 0, sizeof(queue_desc));
 
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -150,6 +152,7 @@ static int create_device(void) {
     }
 
     DXGI_SWAP_CHAIN_DESC1 swap_desc;
+
     memset(&swap_desc, 0, sizeof(swap_desc));
 
     swap_desc.Width = g_width;
@@ -196,6 +199,7 @@ static int create_device(void) {
         );
 
     D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
+
     memset(&heap_desc, 0, sizeof(heap_desc));
 
     heap_desc.NumDescriptors = FRAME_COUNT;
@@ -284,7 +288,12 @@ static int create_device(void) {
         return 0;
     }
 
-    g_fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    g_fence_event = CreateEventA(
+        NULL,
+        FALSE,
+        FALSE,
+        NULL
+    );
 
     if (!g_fence_event) {
         return 0;
@@ -312,7 +321,10 @@ static void wait_gpu(void) {
             g_fence_event
         );
 
-        WaitForSingleObject(g_fence_event, INFINITE);
+        WaitForSingleObject(
+            g_fence_event,
+            INFINITE
+        );
     }
 }
 
@@ -373,9 +385,12 @@ void dxgo_native_clear(
     );
 
     D3D12_RESOURCE_BARRIER barrier;
+
     memset(&barrier, 0, sizeof(barrier));
 
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Type =
+        D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+
     barrier.Transition.pResource =
         g_render_targets[g_frame_index];
 
