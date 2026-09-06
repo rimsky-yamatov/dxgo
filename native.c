@@ -222,10 +222,12 @@ static int create_device(void) {
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV
         );
 
-    D3D12_CPU_DESCRIPTOR_HANDLE handle =
-        g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
-            g_rtv_heap
-        );
+    D3D12_CPU_DESCRIPTOR_HANDLE handle;
+
+    g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
+        g_rtv_heap,
+        &handle
+    );
 
     for (UINT i = 0; i < FRAME_COUNT; i++) {
         hr = g_swap_chain->lpVtbl->GetBuffer(
@@ -409,10 +411,12 @@ void dxgo_native_clear(
         &barrier
     );
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-        g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
-            g_rtv_heap
-        );
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+
+    g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
+        g_rtv_heap,
+        &rtv
+    );
 
     rtv.ptr +=
         g_frame_index * g_rtv_descriptor_size;
