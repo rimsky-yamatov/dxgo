@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#define INITGUID
 
 #include <windows.h>
 #include <d3d12.h>
