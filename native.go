@@ -118,7 +118,12 @@ func nativeFillEllipse(x, y, rx, ry float32, color Color) {
 	)
 }
 
-func nativeDrawTriangle(x1, y1, x2, y2, x3, y3 float32, color Color) {
+func nativeDrawTriangle(
+	x1, y1,
+	x2, y2,
+	x3, y3 float32,
+	color Color,
+) {
 	C.dxgo_native_draw_triangle(
 		C.float(x1),
 		C.float(y1),
@@ -130,7 +135,12 @@ func nativeDrawTriangle(x1, y1, x2, y2, x3, y3 float32, color Color) {
 	)
 }
 
-func nativeFillTriangle(x1, y1, x2, y2, x3, y3 float32, color Color) {
+func nativeFillTriangle(
+	x1, y1,
+	x2, y2,
+	x3, y3 float32,
+	color Color,
+) {
 	C.dxgo_native_fill_triangle(
 		C.float(x1),
 		C.float(y1),
@@ -149,7 +159,7 @@ func nativeDrawPolygon(points []float32, color Color) {
 
 	C.dxgo_native_draw_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points) / 2),
+		C.int(len(points)/2),
 		nativeColor(color),
 	)
 }
@@ -161,9 +171,45 @@ func nativeFillPolygon(points []float32, color Color) {
 
 	C.dxgo_native_fill_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points) / 2),
+		C.int(len(points)/2),
 		nativeColor(color),
 	)
+}
+
+func nativeDrawText(
+	text string,
+	x, y float32,
+	size int,
+	color Color,
+) {
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	C.dxgo_native_draw_text(
+		cText,
+		C.float(x),
+		C.float(y),
+		C.int(size),
+		nativeColor(color),
+	)
+}
+
+func nativeKeyDown(key int) bool {
+	return C.dxgo_native_key_down(
+		C.int(key),
+	) != 0
+}
+
+func nativeKeyPressed(key int) bool {
+	return C.dxgo_native_key_pressed(
+		C.int(key),
+	) != 0
+}
+
+func nativeKeyReleased(key int) bool {
+	return C.dxgo_native_key_released(
+		C.int(key),
+	) != 0
 }
 
 func nativeUpdate() {
