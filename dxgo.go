@@ -3,7 +3,7 @@ package dxgo
 /*
 #cgo windows LDFLAGS: -ld3d12 -ldxgi -luser32 -lgdi32
 #include <stdlib.h>
-#include "internal/native/native.h"
+#include "native.h"
 */
 import "C"
 

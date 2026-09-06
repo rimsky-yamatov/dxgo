@@ -1,7 +1,7 @@
 package dxgo
 
 /*
-#include "internal/native/native.h"
+#include "native.h"
 */
 import "C"
 
