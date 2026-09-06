@@ -16,15 +16,26 @@
 #define MAX_VERTICES 65536
 #define CIRCLE_SEGMENTS 64
 
+typedef struct {
+    float x;
+    float y;
+    float r;
+    float g;
+    float b;
+    float a;
+} DXGOVertex;
+
 static HWND g_hwnd = NULL;
 static int g_width = 800;
 static int g_height = 600;
+
+static WNDCLASSA g_window_class;
 
 static ID3D12Device* g_device = NULL;
 static ID3D12CommandQueue* g_command_queue = NULL;
 static IDXGISwapChain3* g_swap_chain = NULL;
 static ID3D12DescriptorHeap* g_rtv_heap = NULL;
-static ID3D12Resource* g_render_targets[FRAME_COUNT];
+static ID3D12Resource* g_render_targets[FRAME_COUNT] = {0};
 
 static ID3D12CommandAllocator* g_command_allocator = NULL;
 static ID3D12GraphicsCommandList* g_command_list = NULL;
@@ -37,98 +48,90 @@ static UINT g_rtv_descriptor_size = 0;
 static UINT g_frame_index = 0;
 
 static ID3D12RootSignature* g_root_signature = NULL;
-static ID3D12PipelineState* g_pipeline_state = NULL;
+static ID3D12PipelineState* g_point_pipeline_state = NULL;
+static ID3D12PipelineState* g_line_pipeline_state = NULL;
+static ID3D12PipelineState* g_triangle_pipeline_state = NULL;
+
 static ID3D12Resource* g_vertex_buffer = NULL;
+static DXGOVertex* g_vertex_data = NULL;
 static D3D12_VERTEX_BUFFER_VIEW g_vertex_buffer_view;
 
-typedef struct {
-    float x;
-    float y;
-    float r;
-    float g;
-    float b;
-    float a;
-} DXGOVertex;
-
-static DXGOVertex g_vertices[MAX_VERTICES];
 static UINT g_vertex_count = 0;
+static int g_frame_started = 0;
 
-static WNDCLASSA g_window_class;
-
-static const char* g_vertex_shader =
-"struct VSInput {"
-"float2 pos : POSITION;"
-"float4 color : COLOR;"
-"};"
-"struct VSOutput {"
-"float4 pos : SV_POSITION;"
-"float4 color : COLOR;"
-"};"
-"cbuffer Constants : register(b0) {"
-"float width;"
-"float height;"
-"};"
-"VSOutput main(VSInput input) {"
-"VSOutput output;"
-"float x = input.pos.x / width * 2.0 - 1.0;"
-"float y = 1.0 - input.pos.y / height * 2.0;"
-"output.pos = float4(x, y, 0.0, 1.0);"
-"output.color = input.color;"
-"return output;"
-"}";
-
-static const char* g_pixel_shader =
-"struct PSInput {"
-"float4 pos : SV_POSITION;"
-"float4 color : COLOR;"
-"};"
-"float4 main(PSInput input) : SV_TARGET {"
-"return input.color;"
-"}";
-
-static LRESULT CALLBACK dxgo_window_proc(
+static LRESULT CALLBACK dxgo_wnd_proc(
     HWND hwnd,
     UINT message,
     WPARAM wparam,
     LPARAM lparam
-) {
+)
+{
     switch (message) {
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
 
-        case WM_CLOSE:
-            DestroyWindow(hwnd);
+        case WM_SIZE:
+            if (lparam != 0) {
+                int width = (int)LOWORD(lparam);
+                int height = (int)HIWORD(lparam);
+
+                if (width > 0) {
+                    g_width = width;
+                }
+
+                if (height > 0) {
+                    g_height = height;
+                }
+            }
             return 0;
     }
 
-    return DefWindowProcA(hwnd, message, wparam, lparam);
+    return DefWindowProcA(
+        hwnd,
+        message,
+        wparam,
+        lparam
+    );
 }
 
-static int create_window(
-    const char* title,
-    int width,
-    int height
-) {
+static int create_window(const char* title)
+{
     HINSTANCE instance = GetModuleHandleA(NULL);
 
-    memset(&g_window_class, 0, sizeof(g_window_class));
+    memset(
+        &g_window_class,
+        0,
+        sizeof(g_window_class)
+    );
 
-    g_window_class.lpfnWndProc = dxgo_window_proc;
-    g_window_class.hInstance = instance;
-    g_window_class.lpszClassName = "DXGOWindowClass";
-    g_window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+    g_window_class.style =
+        CS_HREDRAW | CS_VREDRAW;
+
+    g_window_class.lpfnWndProc =
+        dxgo_wnd_proc;
+
+    g_window_class.hInstance =
+        instance;
+
+    g_window_class.hCursor =
+        LoadCursorA(NULL, IDC_ARROW);
+
+    g_window_class.lpszClassName =
+        "DXGOWindowClass";
 
     if (!RegisterClassA(&g_window_class)) {
-        return 0;
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return 0;
+        }
     }
 
     RECT rect;
 
     rect.left = 0;
     rect.top = 0;
-    rect.right = width;
-    rect.bottom = height;
+    rect.right = g_width;
+    rect.bottom = g_height;
 
     AdjustWindowRect(
         &rect,
@@ -136,8 +139,7 @@ static int create_window(
         FALSE
     );
 
-    g_hwnd = CreateWindowExA(
-        0,
+    g_hwnd = CreateWindowA(
         "DXGOWindowClass",
         title,
         WS_OVERLAPPEDWINDOW,
@@ -155,259 +157,22 @@ static int create_window(
         return 0;
     }
 
-    ShowWindow(g_hwnd, SW_SHOW);
+    ShowWindow(
+        g_hwnd,
+        SW_SHOW
+    );
+
     UpdateWindow(g_hwnd);
 
     return 1;
 }
 
-static int create_shaders(void) {
-    ID3DBlob* vs_blob = NULL;
-    ID3DBlob* ps_blob = NULL;
-    ID3DBlob* error_blob = NULL;
-
-    HRESULT hr = D3DCompile(
-        g_vertex_shader,
-        strlen(g_vertex_shader),
-        NULL,
-        NULL,
-        NULL,
-        "main",
-        "vs_5_0",
-        0,
-        0,
-        &vs_blob,
-        &error_blob
-    );
-
-    if (FAILED(hr)) {
-        if (error_blob) {
-            error_blob->lpVtbl->Release(error_blob);
-        }
-        return 0;
-    }
-
-    hr = D3DCompile(
-        g_pixel_shader,
-        strlen(g_pixel_shader),
-        NULL,
-        NULL,
-        NULL,
-        "main",
-        "ps_5_0",
-        0,
-        0,
-        &ps_blob,
-        &error_blob
-    );
-
-    if (FAILED(hr)) {
-        vs_blob->lpVtbl->Release(vs_blob);
-
-        if (error_blob) {
-            error_blob->lpVtbl->Release(error_blob);
-        }
-
-        return 0;
-    }
-
-    D3D12_ROOT_PARAMETER root_parameter;
-
-    memset(&root_parameter, 0, sizeof(root_parameter));
-
-    root_parameter.ParameterType =
-        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-
-    root_parameter.Constants.ShaderRegister = 0;
-    root_parameter.Constants.RegisterSpace = 0;
-    root_parameter.Constants.Num32BitValues = 2;
-    root_parameter.ShaderVisibility =
-        D3D12_SHADER_VISIBILITY_VERTEX;
-
-    D3D12_ROOT_SIGNATURE_DESC root_desc;
-
-    memset(&root_desc, 0, sizeof(root_desc));
-
-    root_desc.NumParameters = 1;
-    root_desc.pParameters = &root_parameter;
-    root_desc.Flags =
-        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    ID3DBlob* signature_blob = NULL;
-
-    hr = D3D12SerializeRootSignature(
-        &root_desc,
-        D3D_ROOT_SIGNATURE_VERSION_1,
-        &signature_blob,
-        &error_blob
-    );
-
-    if (FAILED(hr)) {
-        vs_blob->lpVtbl->Release(vs_blob);
-        ps_blob->lpVtbl->Release(ps_blob);
-
-        if (error_blob) {
-            error_blob->lpVtbl->Release(error_blob);
-        }
-
-        return 0;
-    }
-
-    hr = g_device->lpVtbl->CreateRootSignature(
-        g_device,
-        0,
-        signature_blob->lpVtbl->GetBufferPointer(signature_blob),
-        signature_blob->lpVtbl->GetBufferSize(signature_blob),
-        &IID_ID3D12RootSignature,
-        (void**)&g_root_signature
-    );
-
-    signature_blob->lpVtbl->Release(signature_blob);
-
-    if (FAILED(hr)) {
-        vs_blob->lpVtbl->Release(vs_blob);
-        ps_blob->lpVtbl->Release(ps_blob);
-        return 0;
-    }
-
-    D3D12_INPUT_ELEMENT_DESC input_layout[2];
-
-    memset(input_layout, 0, sizeof(input_layout));
-
-    input_layout[0].SemanticName = "POSITION";
-    input_layout[0].SemanticIndex = 0;
-    input_layout[0].Format = DXGI_FORMAT_R32G32_FLOAT;
-    input_layout[0].InputSlot = 0;
-    input_layout[0].AlignedByteOffset = 0;
-    input_layout[0].InputSlotClass =
-        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-    input_layout[1].SemanticName = "COLOR";
-    input_layout[1].SemanticIndex = 0;
-    input_layout[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    input_layout[1].InputSlot = 0;
-    input_layout[1].AlignedByteOffset = 8;
-    input_layout[1].InputSlotClass =
-        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc;
-
-    memset(&pso_desc, 0, sizeof(pso_desc));
-
-    pso_desc.pRootSignature = g_root_signature;
-
-    pso_desc.VS.pShaderBytecode =
-        vs_blob->lpVtbl->GetBufferPointer(vs_blob);
-
-    pso_desc.VS.BytecodeLength =
-        vs_blob->lpVtbl->GetBufferSize(vs_blob);
-
-    pso_desc.PS.pShaderBytecode =
-        ps_blob->lpVtbl->GetBufferPointer(ps_blob);
-
-    pso_desc.PS.BytecodeLength =
-        ps_blob->lpVtbl->GetBufferSize(ps_blob);
-
-    pso_desc.InputLayout.pInputElementDescs = input_layout;
-    pso_desc.InputLayout.NumElements = 2;
-
-    pso_desc.RasterizerState.FillMode =
-        D3D12_FILL_MODE_SOLID;
-
-    pso_desc.RasterizerState.CullMode =
-        D3D12_CULL_MODE_NONE;
-
-    pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
-        D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    pso_desc.SampleMask = UINT_MAX;
-
-    pso_desc.PrimitiveTopologyType =
-        D3D12_PRIMITIVE_TOPOLOGY_TYPE_UNDEFINED;
-
-    pso_desc.NumRenderTargets = 1;
-
-    pso_desc.RTVFormats[0] =
-        DXGI_FORMAT_R8G8B8A8_UNORM;
-
-    pso_desc.SampleDesc.Count = 1;
-
-    hr = g_device->lpVtbl->CreateGraphicsPipelineState(
-        g_device,
-        &pso_desc,
-        &IID_ID3D12PipelineState,
-        (void**)&g_pipeline_state
-    );
-
-    vs_blob->lpVtbl->Release(vs_blob);
-    ps_blob->lpVtbl->Release(ps_blob);
-
-    if (FAILED(hr)) {
-        return 0;
-    }
-
-    return 1;
-}
-
-static int create_vertex_buffer(void) {
-    D3D12_HEAP_PROPERTIES heap_properties;
-
-    memset(&heap_properties, 0, sizeof(heap_properties));
-
-    heap_properties.Type =
-        D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC resource_desc;
-
-    memset(&resource_desc, 0, sizeof(resource_desc));
-
-    resource_desc.Dimension =
-        D3D12_RESOURCE_DIMENSION_BUFFER;
-
-    resource_desc.Width =
-        sizeof(DXGOVertex) * MAX_VERTICES;
-
-    resource_desc.Height = 1;
-    resource_desc.DepthOrArraySize = 1;
-    resource_desc.MipLevels = 1;
-    resource_desc.SampleDesc.Count = 1;
-    resource_desc.Layout =
-        D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HRESULT hr =
-        g_device->lpVtbl->CreateCommittedResource(
-            g_device,
-            &heap_properties,
-            D3D12_HEAP_FLAG_NONE,
-            &resource_desc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            NULL,
-            &IID_ID3D12Resource,
-            (void**)&g_vertex_buffer
-        );
-
-    if (FAILED(hr)) {
-        return 0;
-    }
-
-    g_vertex_buffer_view.BufferLocation =
-        g_vertex_buffer->lpVtbl->GetGPUVirtualAddress(
-            g_vertex_buffer
-        );
-
-    g_vertex_buffer_view.SizeInBytes =
-        sizeof(DXGOVertex) * MAX_VERTICES;
-
-    g_vertex_buffer_view.StrideInBytes =
-        sizeof(DXGOVertex);
-
-    return 1;
-}
-
-static int create_device(void) {
+static int create_device(void)
+{
     IDXGIFactory4* factory = NULL;
 
-    HRESULT hr = CreateDXGIFactory1(
+    HRESULT hr = CreateDXGIFactory2(
+        0,
         &IID_IDXGIFactory4,
         (void**)&factory
     );
@@ -430,10 +195,17 @@ static int create_device(void) {
 
     D3D12_COMMAND_QUEUE_DESC queue_desc;
 
-    memset(&queue_desc, 0, sizeof(queue_desc));
+    memset(
+        &queue_desc,
+        0,
+        sizeof(queue_desc)
+    );
 
     queue_desc.Type =
         D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    queue_desc.Flags =
+        D3D12_COMMAND_QUEUE_FLAG_NONE;
 
     hr = g_device->lpVtbl->CreateCommandQueue(
         g_device,
@@ -442,28 +214,54 @@ static int create_device(void) {
         (void**)&g_command_queue
     );
 
+    factory->lpVtbl->Release(factory);
+
     if (FAILED(hr)) {
-        factory->lpVtbl->Release(factory);
         return 0;
     }
 
-    DXGI_SWAP_CHAIN_DESC1 swap_desc;
+    return 1;
+}
 
-    memset(&swap_desc, 0, sizeof(swap_desc));
+static int create_swap_chain(void)
+{
+    IDXGIFactory4* factory = NULL;
 
-    swap_desc.Width = g_width;
-    swap_desc.Height = g_height;
-    swap_desc.Format =
+    HRESULT hr = CreateDXGIFactory2(
+        0,
+        &IID_IDXGIFactory4,
+        (void**)&factory
+    );
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc;
+
+    memset(
+        &desc,
+        0,
+        sizeof(desc)
+    );
+
+    desc.Width = g_width;
+    desc.Height = g_height;
+    desc.Format =
         DXGI_FORMAT_R8G8B8A8_UNORM;
-
-    swap_desc.SampleDesc.Count = 1;
-    swap_desc.BufferUsage =
+    desc.Stereo = FALSE;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.BufferUsage =
         DXGI_USAGE_RENDER_TARGET_OUTPUT;
-
-    swap_desc.BufferCount = FRAME_COUNT;
-
-    swap_desc.SwapEffect =
+    desc.BufferCount = FRAME_COUNT;
+    desc.Scaling =
+        DXGI_SCALING_STRETCH;
+    desc.SwapEffect =
         DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode =
+        DXGI_ALPHA_MODE_UNSPECIFIED;
+    desc.Flags = 0;
 
     IDXGISwapChain1* swap_chain1 = NULL;
 
@@ -471,7 +269,7 @@ static int create_device(void) {
         factory,
         (IUnknown*)g_command_queue,
         g_hwnd,
-        &swap_desc,
+        &desc,
         NULL,
         NULL,
         &swap_chain1
@@ -488,8 +286,13 @@ static int create_device(void) {
         (void**)&g_swap_chain
     );
 
-    swap_chain1->lpVtbl->Release(swap_chain1);
-    factory->lpVtbl->Release(factory);
+    swap_chain1->lpVtbl->Release(
+        swap_chain1
+    );
+
+    factory->lpVtbl->Release(
+        factory
+    );
 
     if (FAILED(hr)) {
         return 0;
@@ -500,20 +303,35 @@ static int create_device(void) {
             g_swap_chain
         );
 
-    D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
+    return 1;
+}
 
-    memset(&heap_desc, 0, sizeof(heap_desc));
+static int create_rtv_heap(void)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC desc;
 
-    heap_desc.NumDescriptors = FRAME_COUNT;
-    heap_desc.Type =
+    memset(
+        &desc,
+        0,
+        sizeof(desc)
+    );
+
+    desc.NumDescriptors =
+        FRAME_COUNT;
+
+    desc.Type =
         D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
-    hr = g_device->lpVtbl->CreateDescriptorHeap(
-        g_device,
-        &heap_desc,
-        &IID_ID3D12DescriptorHeap,
-        (void**)&g_rtv_heap
-    );
+    desc.Flags =
+        D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    HRESULT hr =
+        g_device->lpVtbl->CreateDescriptorHeap(
+            g_device,
+            &desc,
+            &IID_ID3D12DescriptorHeap,
+            (void**)&g_rtv_heap
+        );
 
     if (FAILED(hr)) {
         return 0;
@@ -544,78 +362,618 @@ static int create_device(void) {
             return 0;
         }
 
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+            handle;
+
+        rtv.ptr +=
+            (SIZE_T)i *
+            g_rtv_descriptor_size;
+
         g_device->lpVtbl->CreateRenderTargetView(
             g_device,
             g_render_targets[i],
             NULL,
-            handle
+            rtv
+        );
+    }
+
+    return 1;
+}
+
+static int create_command_objects(void)
+{
+    HRESULT hr =
+        g_device->lpVtbl->CreateCommandAllocator(
+            g_device,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            &IID_ID3D12CommandAllocator,
+            (void**)&g_command_allocator
         );
 
-        handle.ptr += g_rtv_descriptor_size;
+    if (FAILED(hr)) {
+        return 0;
     }
 
-    hr = g_device->lpVtbl->CreateCommandAllocator(
-        g_device,
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        &IID_ID3D12CommandAllocator,
-        (void**)&g_command_allocator
-    );
+    hr =
+        g_device->lpVtbl->CreateCommandList(
+            g_device,
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            g_command_allocator,
+            NULL,
+            &IID_ID3D12GraphicsCommandList,
+            (void**)&g_command_list
+        );
 
     if (FAILED(hr)) {
         return 0;
     }
 
-    hr = g_device->lpVtbl->CreateCommandList(
-        g_device,
-        0,
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        g_command_allocator,
-        NULL,
-        &IID_ID3D12GraphicsCommandList,
-        (void**)&g_command_list
-    );
+    hr =
+        g_command_list->lpVtbl->Close(
+            g_command_list
+        );
 
     if (FAILED(hr)) {
-        return 0;
-    }
-
-    g_command_list->lpVtbl->Close(g_command_list);
-
-    hr = g_device->lpVtbl->CreateFence(
-        g_device,
-        0,
-        D3D12_FENCE_FLAG_NONE,
-        &IID_ID3D12Fence,
-        (void**)&g_fence
-    );
-
-    if (FAILED(hr)) {
-        return 0;
-    }
-
-    g_fence_event = CreateEventA(
-        NULL,
-        FALSE,
-        FALSE,
-        NULL
-    );
-
-    if (!g_fence_event) {
-        return 0;
-    }
-
-    if (!create_shaders()) {
-        return 0;
-    }
-
-    if (!create_vertex_buffer()) {
         return 0;
     }
 
     return 1;
 }
 
-static void wait_gpu(void) {
+static int create_fence(void)
+{
+    HRESULT hr =
+        g_device->lpVtbl->CreateFence(
+            g_device,
+            0,
+            D3D12_FENCE_FLAG_NONE,
+            &IID_ID3D12Fence,
+            (void**)&g_fence
+        );
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    g_fence_event =
+        CreateEventA(
+            NULL,
+            FALSE,
+            FALSE,
+            NULL
+        );
+
+    if (!g_fence_event) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int compile_shader(
+    const char* source,
+    const char* entry,
+    const char* target,
+    ID3DBlob** blob
+)
+{
+    ID3DBlob* error_blob = NULL;
+
+    HRESULT hr = D3DCompile(
+        source,
+        strlen(source),
+        NULL,
+        NULL,
+        NULL,
+        entry,
+        target,
+        D3DCOMPILE_OPTIMIZATION_LEVEL3,
+        0,
+        blob,
+        &error_blob
+    );
+
+    if (error_blob) {
+        error_blob->lpVtbl->Release(
+            error_blob
+        );
+    }
+
+    return SUCCEEDED(hr);
+}
+
+static int create_root_signature(void)
+{
+    D3D12_ROOT_PARAMETER parameter;
+
+    memset(
+        &parameter,
+        0,
+        sizeof(parameter)
+    );
+
+    parameter.ParameterType =
+        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+
+    parameter.Constants.ShaderRegister = 0;
+    parameter.Constants.RegisterSpace = 0;
+    parameter.Constants.Num32BitValues = 2;
+
+    parameter.ShaderVisibility =
+        D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC desc;
+
+    memset(
+        &desc,
+        0,
+        sizeof(desc)
+    );
+
+    desc.NumParameters = 1;
+    desc.pParameters = &parameter;
+    desc.NumStaticSamplers = 0;
+    desc.pStaticSamplers = NULL;
+
+    desc.Flags =
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* signature = NULL;
+    ID3DBlob* error = NULL;
+
+    HRESULT hr =
+        D3D12SerializeRootSignature(
+            &desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &signature,
+            &error
+        );
+
+    if (error) {
+        error->lpVtbl->Release(error);
+    }
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    hr =
+        g_device->lpVtbl->CreateRootSignature(
+            g_device,
+            0,
+            signature->lpVtbl->GetBufferPointer(
+                signature
+            ),
+            signature->lpVtbl->GetBufferSize(
+                signature
+            ),
+            &IID_ID3D12RootSignature,
+            (void**)&g_root_signature
+        );
+
+    signature->lpVtbl->Release(
+        signature
+    );
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int create_pipeline_states(void)
+{
+    const char* shader_source =
+        "struct VSInput {"
+        "float2 position : POSITION;"
+        "float4 color : COLOR;"
+        "};"
+
+        "struct VSOutput {"
+        "float4 position : SV_POSITION;"
+        "float4 color : COLOR;"
+        "};"
+
+        "cbuffer Constants : register(b0) {"
+        "float width;"
+        "float height;"
+        "};"
+
+        "VSOutput VSMain(VSInput input)"
+        "{"
+        "VSOutput output;"
+        "float x = input.position.x / width * 2.0 - 1.0;"
+        "float y = 1.0 - input.position.y / height * 2.0;"
+        "output.position = float4(x, y, 0.0, 1.0);"
+        "output.color = input.color;"
+        "return output;"
+        "}"
+
+        "float4 PSMain(VSOutput input) : SV_TARGET"
+        "{"
+        "return input.color;"
+        "}";
+
+    ID3DBlob* vertex_shader = NULL;
+    ID3DBlob* pixel_shader = NULL;
+
+    if (!compile_shader(
+        shader_source,
+        "VSMain",
+        "vs_5_0",
+        &vertex_shader
+    )) {
+        return 0;
+    }
+
+    if (!compile_shader(
+        shader_source,
+        "PSMain",
+        "ps_5_0",
+        &pixel_shader
+    )) {
+        vertex_shader->lpVtbl->Release(
+            vertex_shader
+        );
+        return 0;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC input_layout[2];
+
+    memset(
+        input_layout,
+        0,
+        sizeof(input_layout)
+    );
+
+    input_layout[0].SemanticName =
+        "POSITION";
+
+    input_layout[0].SemanticIndex = 0;
+
+    input_layout[0].Format =
+        DXGI_FORMAT_R32G32_FLOAT;
+
+    input_layout[0].InputSlot = 0;
+
+    input_layout[0].AlignedByteOffset = 0;
+
+    input_layout[0].InputSlotClass =
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+    input_layout[1].SemanticName =
+        "COLOR";
+
+    input_layout[1].SemanticIndex = 0;
+
+    input_layout[1].Format =
+        DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+    input_layout[1].InputSlot = 0;
+
+    input_layout[1].AlignedByteOffset = 8;
+
+    input_layout[1].InputSlotClass =
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+    D3D12_RASTERIZER_DESC rasterizer;
+
+    memset(
+        &rasterizer,
+        0,
+        sizeof(rasterizer)
+    );
+
+    rasterizer.FillMode =
+        D3D12_FILL_MODE_SOLID;
+
+    rasterizer.CullMode =
+        D3D12_CULL_MODE_NONE;
+
+    rasterizer.FrontCounterClockwise =
+        FALSE;
+
+    rasterizer.DepthBias =
+        D3D12_DEFAULT_DEPTH_BIAS;
+
+    rasterizer.DepthBiasClamp =
+        D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+
+    rasterizer.SlopeScaledDepthBias =
+        D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+
+    rasterizer.DepthClipEnable =
+        TRUE;
+
+    rasterizer.MultisampleEnable =
+        FALSE;
+
+    rasterizer.AntialiasedLineEnable =
+        FALSE;
+
+    rasterizer.ForcedSampleCount = 0;
+
+    rasterizer.ConservativeRaster =
+        D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    D3D12_BLEND_DESC blend;
+
+    memset(
+        &blend,
+        0,
+        sizeof(blend)
+    );
+
+    blend.AlphaToCoverageEnable =
+        FALSE;
+
+    blend.IndependentBlendEnable =
+        FALSE;
+
+    blend.RenderTarget[0].BlendEnable =
+        TRUE;
+
+    blend.RenderTarget[0].LogicOpEnable =
+        FALSE;
+
+    blend.RenderTarget[0].SrcBlend =
+        D3D12_BLEND_SRC_ALPHA;
+
+    blend.RenderTarget[0].DestBlend =
+        D3D12_BLEND_INV_SRC_ALPHA;
+
+    blend.RenderTarget[0].BlendOp =
+        D3D12_BLEND_OP_ADD;
+
+    blend.RenderTarget[0].SrcBlendAlpha =
+        D3D12_BLEND_ONE;
+
+    blend.RenderTarget[0].DestBlendAlpha =
+        D3D12_BLEND_INV_SRC_ALPHA;
+
+    blend.RenderTarget[0].BlendOpAlpha =
+        D3D12_BLEND_OP_ADD;
+
+    blend.RenderTarget[0].LogicOp =
+        D3D12_LOGIC_OP_NOOP;
+
+    blend.RenderTarget[0].RenderTargetWriteMask =
+        D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_DEPTH_STENCIL_DESC depth;
+
+    memset(
+        &depth,
+        0,
+        sizeof(depth)
+    );
+
+    depth.DepthEnable = FALSE;
+    depth.StencilEnable = FALSE;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC base;
+
+    memset(
+        &base,
+        0,
+        sizeof(base)
+    );
+
+    base.pRootSignature =
+        g_root_signature;
+
+    base.VS.pShaderBytecode =
+        vertex_shader->lpVtbl->GetBufferPointer(
+            vertex_shader
+        );
+
+    base.VS.BytecodeLength =
+        vertex_shader->lpVtbl->GetBufferSize(
+            vertex_shader
+        );
+
+    base.PS.pShaderBytecode =
+        pixel_shader->lpVtbl->GetBufferPointer(
+            pixel_shader
+        );
+
+    base.PS.BytecodeLength =
+        pixel_shader->lpVtbl->GetBufferSize(
+            pixel_shader
+        );
+
+    base.BlendState = blend;
+    base.SampleMask = UINT_MAX;
+    base.RasterizerState = rasterizer;
+    base.DepthStencilState = depth;
+
+    base.InputLayout.pInputElementDescs =
+        input_layout;
+
+    base.InputLayout.NumElements = 2;
+
+    base.NumRenderTargets = 1;
+
+    base.RTVFormats[0] =
+        DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    base.DSVFormat =
+        DXGI_FORMAT_UNKNOWN;
+
+    base.SampleDesc.Count = 1;
+    base.SampleDesc.Quality = 0;
+
+    base.PrimitiveTopologyType =
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+
+    HRESULT hr =
+        g_device->lpVtbl->CreateGraphicsPipelineState(
+            g_device,
+            &base,
+            &IID_ID3D12PipelineState,
+            (void**)&g_point_pipeline_state
+        );
+
+    if (FAILED(hr)) {
+        pixel_shader->lpVtbl->Release(
+            pixel_shader
+        );
+
+        vertex_shader->lpVtbl->Release(
+            vertex_shader
+        );
+
+        return 0;
+    }
+
+    base.PrimitiveTopologyType =
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+
+    hr =
+        g_device->lpVtbl->CreateGraphicsPipelineState(
+            g_device,
+            &base,
+            &IID_ID3D12PipelineState,
+            (void**)&g_line_pipeline_state
+        );
+
+    if (FAILED(hr)) {
+        pixel_shader->lpVtbl->Release(
+            pixel_shader
+        );
+
+        vertex_shader->lpVtbl->Release(
+            vertex_shader
+        );
+
+        return 0;
+    }
+
+    base.PrimitiveTopologyType =
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    hr =
+        g_device->lpVtbl->CreateGraphicsPipelineState(
+            g_device,
+            &base,
+            &IID_ID3D12PipelineState,
+            (void**)&g_triangle_pipeline_state
+        );
+
+    pixel_shader->lpVtbl->Release(
+        pixel_shader
+    );
+
+    vertex_shader->lpVtbl->Release(
+        vertex_shader
+    );
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int create_vertex_buffer(void)
+{
+    D3D12_HEAP_PROPERTIES heap;
+
+    memset(
+        &heap,
+        0,
+        sizeof(heap)
+    );
+
+    heap.Type =
+        D3D12_HEAP_TYPE_UPLOAD;
+
+    heap.CPUPageProperty =
+        D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+
+    heap.MemoryPoolPreference =
+        D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC desc;
+
+    memset(
+        &desc,
+        0,
+        sizeof(desc)
+    );
+
+    desc.Dimension =
+        D3D12_RESOURCE_DIMENSION_BUFFER;
+
+    desc.Alignment = 0;
+
+    desc.Width =
+        sizeof(DXGOVertex) *
+        MAX_VERTICES;
+
+    desc.Height = 1;
+
+    desc.DepthOrArraySize = 1;
+
+    desc.MipLevels = 1;
+
+    desc.Format =
+        DXGI_FORMAT_UNKNOWN;
+
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+
+    desc.Layout =
+        D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    desc.Flags =
+        D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT hr =
+        g_device->lpVtbl->CreateCommittedResource(
+            g_device,
+            &heap,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            NULL,
+            &IID_ID3D12Resource,
+            (void**)&g_vertex_buffer
+        );
+
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    g_vertex_data =
+        (DXGOVertex*)malloc(
+            sizeof(DXGOVertex) *
+            MAX_VERTICES
+        );
+
+    if (!g_vertex_data) {
+        return 0;
+    }
+
+    g_vertex_buffer_view.BufferLocation =
+        g_vertex_buffer->lpVtbl->GetGPUVirtualAddress(
+            g_vertex_buffer
+        );
+
+    g_vertex_buffer_view.StrideInBytes =
+        sizeof(DXGOVertex);
+
+    g_vertex_buffer_view.SizeInBytes =
+        sizeof(DXGOVertex) *
+        MAX_VERTICES;
+
+    return 1;
+}
+
+static void wait_gpu(void)
+{
     g_fence_value++;
 
     g_command_queue->lpVtbl->Signal(
@@ -625,8 +983,9 @@ static void wait_gpu(void) {
     );
 
     if (
-        g_fence->lpVtbl->GetCompletedValue(g_fence)
-        < g_fence_value
+        g_fence->lpVtbl->GetCompletedValue(
+            g_fence
+        ) < g_fence_value
     ) {
         g_fence->lpVtbl->SetEventOnCompletion(
             g_fence,
@@ -641,7 +1000,28 @@ static void wait_gpu(void) {
     }
 }
 
-static void begin_frame(void) {
+static D3D12_CPU_DESCRIPTOR_HANDLE current_rtv(void)
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE handle;
+
+    g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
+        g_rtv_heap,
+        &handle
+    );
+
+    handle.ptr +=
+        (SIZE_T)g_frame_index *
+        g_rtv_descriptor_size;
+
+    return handle;
+}
+
+static void begin_frame(void)
+{
+    if (g_frame_started) {
+        return;
+    }
+
     g_vertex_count = 0;
 
     g_command_allocator->lpVtbl->Reset(
@@ -651,15 +1031,81 @@ static void begin_frame(void) {
     g_command_list->lpVtbl->Reset(
         g_command_list,
         g_command_allocator,
-        g_pipeline_state
+        g_triangle_pipeline_state
     );
+
+    D3D12_VIEWPORT viewport;
+
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    viewport.Width = (float)g_width;
+    viewport.Height = (float)g_height;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+
+    g_command_list->lpVtbl->RSSetViewports(
+        g_command_list,
+        1,
+        &viewport
+    );
+
+    D3D12_RECT scissor;
+
+    scissor.left = 0;
+    scissor.top = 0;
+    scissor.right = g_width;
+    scissor.bottom = g_height;
+
+    g_command_list->lpVtbl->RSSetScissorRects(
+        g_command_list,
+        1,
+        &scissor
+    );
+
+    g_command_list->lpVtbl->SetGraphicsRootSignature(
+        g_command_list,
+        g_root_signature
+    );
+
+    float constants[2];
+
+    constants[0] =
+        (float)g_width;
+
+    constants[1] =
+        (float)g_height;
+
+    g_command_list->lpVtbl->SetGraphicsRoot32BitConstants(
+        g_command_list,
+        0,
+        2,
+        constants,
+        0
+    );
+
+    g_command_list->lpVtbl->IASetVertexBuffers(
+        g_command_list,
+        0,
+        1,
+        &g_vertex_buffer_view
+    );
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+        current_rtv();
 
     D3D12_RESOURCE_BARRIER barrier;
 
-    memset(&barrier, 0, sizeof(barrier));
+    memset(
+        &barrier,
+        0,
+        sizeof(barrier)
+    );
 
     barrier.Type =
         D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+
+    barrier.Flags =
+        D3D12_RESOURCE_BARRIER_FLAG_NONE;
 
     barrier.Transition.pResource =
         g_render_targets[g_frame_index];
@@ -678,46 +1124,77 @@ static void begin_frame(void) {
         1,
         &barrier
     );
+
+    g_command_list->lpVtbl->OMSetRenderTargets(
+        g_command_list,
+        1,
+        &rtv,
+        FALSE,
+        NULL
+    );
+
+    g_frame_started = 1;
 }
 
-static void push_vertex(
+static int add_vertex(
     float x,
     float y,
-    DXGOColor color
-) {
+    float r,
+    float g,
+    float b,
+    float a
+)
+{
     if (g_vertex_count >= MAX_VERTICES) {
-        return;
+        return 0;
     }
 
-    g_vertices[g_vertex_count].x = x;
-    g_vertices[g_vertex_count].y = y;
-    g_vertices[g_vertex_count].r = color.r / 255.0f;
-    g_vertices[g_vertex_count].g = color.g / 255.0f;
-    g_vertices[g_vertex_count].b = color.b / 255.0f;
-    g_vertices[g_vertex_count].a = color.a / 255.0f;
+    DXGOVertex* vertex =
+        &g_vertex_data[g_vertex_count];
+
+    vertex->x = x;
+    vertex->y = y;
+    vertex->r = r;
+    vertex->g = g;
+    vertex->b = b;
+    vertex->a = a;
 
     g_vertex_count++;
+
+    return 1;
 }
 
 static void draw_primitive(
     D3D12_PRIMITIVE_TOPOLOGY topology,
     UINT start,
     UINT count
-) {
-    if (count == 0) {
-        return;
+)
+{
+    ID3D12PipelineState* pipeline =
+        g_triangle_pipeline_state;
+
+    if (
+        topology ==
+        D3D_PRIMITIVE_TOPOLOGY_POINTLIST
+    ) {
+        pipeline =
+            g_point_pipeline_state;
+    } else if (
+        topology ==
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST
+    ) {
+        pipeline =
+            g_line_pipeline_state;
     }
+
+    g_command_list->lpVtbl->SetPipelineState(
+        g_command_list,
+        pipeline
+    );
 
     g_command_list->lpVtbl->IASetPrimitiveTopology(
         g_command_list,
         topology
-    );
-
-    g_command_list->lpVtbl->IASetVertexBuffers(
-        g_command_list,
-        0,
-        1,
-        &g_vertex_buffer_view
     );
 
     g_command_list->lpVtbl->DrawInstanced(
@@ -729,48 +1206,124 @@ static void draw_primitive(
     );
 }
 
+static float color_r(DXGOColor color)
+{
+    return (float)color.r / 255.0f;
+}
+
+static float color_g(DXGOColor color)
+{
+    return (float)color.g / 255.0f;
+}
+
+static float color_b(DXGOColor color)
+{
+    return (float)color.b / 255.0f;
+}
+
+static float color_a(DXGOColor color)
+{
+    return (float)color.a / 255.0f;
+}
+
+int dxgo_native_init(
+    const char* title,
+    int width,
+    int height
+)
+{
+    g_width = width;
+    g_height = height;
+
+    if (!create_window(title)) {
+        return 0;
+    }
+
+    if (!create_device()) {
+        return 0;
+    }
+
+    if (!create_swap_chain()) {
+        return 0;
+    }
+
+    if (!create_rtv_heap()) {
+        return 0;
+    }
+
+    if (!create_command_objects()) {
+        return 0;
+    }
+
+    if (!create_fence()) {
+        return 0;
+    }
+
+    if (!create_root_signature()) {
+        return 0;
+    }
+
+    if (!create_pipeline_states()) {
+        return 0;
+    }
+
+    if (!create_vertex_buffer()) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int dxgo_native_open(void)
+{
+    MSG message;
+
+    while (
+        PeekMessageA(
+            &message,
+            NULL,
+            0,
+            0,
+            PM_REMOVE
+        )
+    ) {
+        if (message.message == WM_QUIT) {
+            return 0;
+        }
+
+        TranslateMessage(&message);
+        DispatchMessageA(&message);
+    }
+
+    return g_hwnd != NULL &&
+           IsWindow(g_hwnd);
+}
+
 void dxgo_native_clear(
     float r,
     float g,
     float b,
     float a
-) {
+)
+{
     begin_frame();
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+    float color[4];
 
-    g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
-        g_rtv_heap,
-        &rtv
-    );
+    color[0] = r;
+    color[1] = g;
+    color[2] = b;
+    color[3] = a;
 
-    rtv.ptr +=
-        g_frame_index * g_rtv_descriptor_size;
-
-    FLOAT clear_color[4] = {
-        r,
-        g,
-        b,
-        a
-    };
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+        current_rtv();
 
     g_command_list->lpVtbl->ClearRenderTargetView(
         g_command_list,
         rtv,
-        clear_color,
+        color,
         0,
         NULL
-    );
-
-    g_command_list->lpVtbl->SetGraphicsRoot32BitConstants(
-        g_command_list,
-        0,
-        2,
-        (float[]){
-            (float)g_width,
-            (float)g_height
-        },
-        0
     );
 }
 
@@ -778,10 +1331,22 @@ void dxgo_native_draw_point(
     float x,
     float y,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
-    push_vertex(x, y, color);
+    if (!add_vertex(
+        x,
+        y,
+        color_r(color),
+        color_g(color),
+        color_b(color),
+        color_a(color)
+    )) {
+        return;
+    }
 
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_POINTLIST,
@@ -796,11 +1361,33 @@ void dxgo_native_draw_line(
     float x2,
     float y2,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
-    push_vertex(x1, y1, color);
-    push_vertex(x2, y2, color);
+    if (!add_vertex(
+        x1,
+        y1,
+        color_r(color),
+        color_g(color),
+        color_b(color),
+        color_a(color)
+    )) {
+        return;
+    }
+
+    if (!add_vertex(
+        x2,
+        y2,
+        color_r(color),
+        color_g(color),
+        color_b(color),
+        color_a(color)
+    )) {
+        return;
+    }
 
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_LINELIST,
@@ -815,37 +1402,63 @@ void dxgo_native_draw_rect(
     float width,
     float height,
     DXGOColor color
-) {
-    dxgo_native_draw_line(
-        x,
-        y,
-        x + width,
-        y,
-        color
-    );
+)
+{
+    begin_frame();
 
-    dxgo_native_draw_line(
-        x + width,
-        y,
-        x + width,
-        y + height,
-        color
-    );
+    UINT start = g_vertex_count;
 
-    dxgo_native_draw_line(
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
+    if (!add_vertex(x, y, r, g, b, a)) return;
+    if (!add_vertex(x + width, y, r, g, b, a)) return;
+
+    if (!add_vertex(x + width, y, r, g, b, a)) return;
+    if (!add_vertex(
         x + width,
         y + height,
-        x,
-        y + height,
-        color
-    );
+        r,
+        g,
+        b,
+        a
+    )) return;
 
-    dxgo_native_draw_line(
+    if (!add_vertex(
+        x + width,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
         x,
         y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
         x,
-        y,
-        color
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(x, y, r, g, b, a)) return;
+
+    draw_primitive(
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST,
+        start,
+        8
     );
 }
 
@@ -855,16 +1468,56 @@ void dxgo_native_fill_rect(
     float width,
     float height,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
-    push_vertex(x, y, color);
-    push_vertex(x + width, y, color);
-    push_vertex(x + width, y + height, color);
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
 
-    push_vertex(x, y, color);
-    push_vertex(x + width, y + height, color);
-    push_vertex(x, y + height, color);
+    if (!add_vertex(x, y, r, g, b, a)) return;
+
+    if (!add_vertex(
+        x + width,
+        y,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x + width,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(x, y, r, g, b, a)) return;
+
+    if (!add_vertex(
+        x + width,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
 
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
@@ -878,29 +1531,51 @@ void dxgo_native_draw_circle(
     float y,
     float radius,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
-        float a1 =
-            2.0f * 3.14159265358979323846f *
-            (float)i / CIRCLE_SEGMENTS;
+        float angle1 =
+            (float)i /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        float a2 =
-            2.0f * 3.14159265358979323846f *
-            (float)(i + 1) / CIRCLE_SEGMENTS;
+        float angle2 =
+            (float)(i + 1) /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        push_vertex(
-            x + cosf(a1) * radius,
-            y + sinf(a1) * radius,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle1) * radius,
+            y + sinf(angle1) * radius,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a2) * radius,
-            y + sinf(a2) * radius,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle2) * radius,
+            y + sinf(angle2) * radius,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
 
     draw_primitive(
@@ -915,31 +1590,62 @@ void dxgo_native_fill_circle(
     float y,
     float radius,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
-        float a1 =
-            2.0f * 3.14159265358979323846f *
-            (float)i / CIRCLE_SEGMENTS;
+        float angle1 =
+            (float)i /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        float a2 =
-            2.0f * 3.14159265358979323846f *
-            (float)(i + 1) / CIRCLE_SEGMENTS;
+        float angle2 =
+            (float)(i + 1) /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        push_vertex(x, y, color);
+        if (!add_vertex(
+            x,
+            y,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a1) * radius,
-            y + sinf(a1) * radius,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle1) * radius,
+            y + sinf(angle1) * radius,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a2) * radius,
-            y + sinf(a2) * radius,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle2) * radius,
+            y + sinf(angle2) * radius,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
 
     draw_primitive(
@@ -955,29 +1661,51 @@ void dxgo_native_draw_ellipse(
     float rx,
     float ry,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
-        float a1 =
-            2.0f * 3.14159265358979323846f *
-            (float)i / CIRCLE_SEGMENTS;
+        float angle1 =
+            (float)i /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        float a2 =
-            2.0f * 3.14159265358979323846f *
-            (float)(i + 1) / CIRCLE_SEGMENTS;
+        float angle2 =
+            (float)(i + 1) /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        push_vertex(
-            x + cosf(a1) * rx,
-            y + sinf(a1) * ry,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle1) * rx,
+            y + sinf(angle1) * ry,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a2) * rx,
-            y + sinf(a2) * ry,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle2) * rx,
+            y + sinf(angle2) * ry,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
 
     draw_primitive(
@@ -993,31 +1721,62 @@ void dxgo_native_fill_ellipse(
     float rx,
     float ry,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
-        float a1 =
-            2.0f * 3.14159265358979323846f *
-            (float)i / CIRCLE_SEGMENTS;
+        float angle1 =
+            (float)i /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        float a2 =
-            2.0f * 3.14159265358979323846f *
-            (float)(i + 1) / CIRCLE_SEGMENTS;
+        float angle2 =
+            (float)(i + 1) /
+            CIRCLE_SEGMENTS *
+            2.0f *
+            (float)M_PI;
 
-        push_vertex(x, y, color);
+        if (!add_vertex(
+            x,
+            y,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a1) * rx,
-            y + sinf(a1) * ry,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle1) * rx,
+            y + sinf(angle1) * ry,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
-            x + cosf(a2) * rx,
-            y + sinf(a2) * ry,
-            color
-        );
+        if (!add_vertex(
+            x + cosf(angle2) * rx,
+            y + sinf(angle2) * ry,
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
 
     draw_primitive(
@@ -1035,10 +1794,76 @@ void dxgo_native_draw_triangle(
     float x3,
     float y3,
     DXGOColor color
-) {
-    dxgo_native_draw_line(x1, y1, x2, y2, color);
-    dxgo_native_draw_line(x2, y2, x3, y3, color);
-    dxgo_native_draw_line(x3, y3, x1, y1, color);
+)
+{
+    begin_frame();
+
+    UINT start = g_vertex_count;
+
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
+    if (!add_vertex(
+        x1,
+        y1,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x2,
+        y2,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x2,
+        y2,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x3,
+        y3,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x3,
+        y3,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x1,
+        y1,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    draw_primitive(
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST,
+        start,
+        6
+    );
 }
 
 void dxgo_native_fill_triangle(
@@ -1049,12 +1874,43 @@ void dxgo_native_fill_triangle(
     float x3,
     float y3,
     DXGOColor color
-) {
+)
+{
+    begin_frame();
+
     UINT start = g_vertex_count;
 
-    push_vertex(x1, y1, color);
-    push_vertex(x2, y2, color);
-    push_vertex(x3, y3, color);
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
+    if (!add_vertex(
+        x1,
+        y1,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x2,
+        y2,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x3,
+        y3,
+        r,
+        g,
+        b,
+        a
+    )) return;
 
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
@@ -1067,53 +1923,106 @@ void dxgo_native_draw_polygon(
     const float* points,
     int count,
     DXGOColor color
-) {
+)
+{
     if (!points || count < 2) {
         return;
     }
 
+    begin_frame();
+
+    UINT start = g_vertex_count;
+
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 0; i < count; i++) {
         int next = (i + 1) % count;
 
-        dxgo_native_draw_line(
+        if (!add_vertex(
             points[i * 2],
             points[i * 2 + 1],
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
+
+        if (!add_vertex(
             points[next * 2],
             points[next * 2 + 1],
-            color
-        );
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
+
+    draw_primitive(
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST,
+        start,
+        count * 2
+    );
 }
 
 void dxgo_native_fill_polygon(
     const float* points,
     int count,
     DXGOColor color
-) {
+)
+{
     if (!points || count < 3) {
         return;
     }
 
+    begin_frame();
+
     UINT start = g_vertex_count;
 
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
     for (int i = 1; i < count - 1; i++) {
-        push_vertex(
+        if (!add_vertex(
             points[0],
             points[1],
-            color
-        );
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
+        if (!add_vertex(
             points[i * 2],
             points[i * 2 + 1],
-            color
-        );
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
 
-        push_vertex(
+        if (!add_vertex(
             points[(i + 1) * 2],
             points[(i + 1) * 2 + 1],
-            color
-        );
+            r,
+            g,
+            b,
+            a
+        )) {
+            return;
+        }
     }
 
     draw_primitive(
@@ -1123,13 +2032,59 @@ void dxgo_native_fill_polygon(
     );
 }
 
-void dxgo_native_update(void) {
+void dxgo_native_update(void)
+{
+    if (!g_frame_started) {
+        begin_frame();
+    }
+
+    if (g_vertex_count > 0) {
+        D3D12_RANGE range;
+
+        range.Begin = 0;
+        range.End =
+            sizeof(DXGOVertex) *
+            g_vertex_count;
+
+        void* mapped = NULL;
+
+        HRESULT hr =
+            g_vertex_buffer->lpVtbl->Map(
+                g_vertex_buffer,
+                0,
+                &range,
+                &mapped
+            );
+
+        if (SUCCEEDED(hr)) {
+            memcpy(
+                mapped,
+                g_vertex_data,
+                sizeof(DXGOVertex) *
+                g_vertex_count
+            );
+
+            g_vertex_buffer->lpVtbl->Unmap(
+                g_vertex_buffer,
+                0,
+                &range
+            );
+        }
+    }
+
     D3D12_RESOURCE_BARRIER barrier;
 
-    memset(&barrier, 0, sizeof(barrier));
+    memset(
+        &barrier,
+        0,
+        sizeof(barrier)
+    );
 
     barrier.Type =
         D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+
+    barrier.Flags =
+        D3D12_RESOURCE_BARRIER_FLAG_NONE;
 
     barrier.Transition.pResource =
         g_render_targets[g_frame_index];
@@ -1153,9 +2108,10 @@ void dxgo_native_update(void) {
         g_command_list
     );
 
-    ID3D12CommandList* lists[] = {
-        (ID3D12CommandList*)g_command_list
-    };
+    ID3D12CommandList* lists[1];
+
+    lists[0] =
+        (ID3D12CommandList*)g_command_list;
 
     g_command_queue->lpVtbl->ExecuteCommandLists(
         g_command_queue,
@@ -1176,80 +2132,56 @@ void dxgo_native_update(void) {
             g_swap_chain
         );
 
-    if (g_vertex_buffer) {
-        void* mapped = NULL;
-
-        D3D12_RANGE range;
-
-        range.Begin = 0;
-        range.End = 0;
-
-        if (SUCCEEDED(
-            g_vertex_buffer->lpVtbl->Map(
-                g_vertex_buffer,
-                0,
-                &range,
-                &mapped
-            )
-        )) {
-            memcpy(
-                mapped,
-                g_vertices,
-                sizeof(DXGOVertex) * g_vertex_count
-            );
-
-            g_vertex_buffer->lpVtbl->Unmap(
-                g_vertex_buffer,
-                0,
-                NULL
-            );
-        }
-    }
+    g_vertex_count = 0;
+    g_frame_started = 0;
 }
 
-int dxgo_native_init(
-    const char* title,
-    int width,
-    int height
-) {
-    g_width = width;
-    g_height = height;
-
-    if (!create_window(title, width, height)) {
-        return 0;
-    }
-
-    if (!create_device()) {
-        return 0;
-    }
-
-    return 1;
-}
-
-int dxgo_native_open(void) {
-    MSG message;
-
-    while (PeekMessageA(
-        &message,
-        NULL,
-        0,
-        0,
-        PM_REMOVE
-    )) {
-        if (message.message == WM_QUIT) {
-            return 0;
-        }
-
-        TranslateMessage(&message);
-        DispatchMessageA(&message);
-    }
-
-    return IsWindow(g_hwnd) != 0;
-}
-
-void dxgo_native_close(void) {
-    if (g_command_queue && g_fence) {
+void dxgo_native_close(void)
+{
+    if (g_command_queue &&
+        g_fence &&
+        g_fence_event) {
         wait_gpu();
+    }
+
+    if (g_vertex_data) {
+        free(g_vertex_data);
+        g_vertex_data = NULL;
+    }
+
+    if (g_vertex_buffer) {
+        g_vertex_buffer->lpVtbl->Release(
+            g_vertex_buffer
+        );
+        g_vertex_buffer = NULL;
+    }
+
+    if (g_point_pipeline_state) {
+        g_point_pipeline_state->lpVtbl->Release(
+            g_point_pipeline_state
+        );
+        g_point_pipeline_state = NULL;
+    }
+
+    if (g_line_pipeline_state) {
+        g_line_pipeline_state->lpVtbl->Release(
+            g_line_pipeline_state
+        );
+        g_line_pipeline_state = NULL;
+    }
+
+    if (g_triangle_pipeline_state) {
+        g_triangle_pipeline_state->lpVtbl->Release(
+            g_triangle_pipeline_state
+        );
+        g_triangle_pipeline_state = NULL;
+    }
+
+    if (g_root_signature) {
+        g_root_signature->lpVtbl->Release(
+            g_root_signature
+        );
+        g_root_signature = NULL;
     }
 
     if (g_fence_event) {
@@ -1257,28 +2189,17 @@ void dxgo_native_close(void) {
         g_fence_event = NULL;
     }
 
-    if (g_vertex_buffer) {
-        g_vertex_buffer->lpVtbl->Release(g_vertex_buffer);
-        g_vertex_buffer = NULL;
-    }
-
-    if (g_pipeline_state) {
-        g_pipeline_state->lpVtbl->Release(g_pipeline_state);
-        g_pipeline_state = NULL;
-    }
-
-    if (g_root_signature) {
-        g_root_signature->lpVtbl->Release(g_root_signature);
-        g_root_signature = NULL;
-    }
-
     if (g_fence) {
-        g_fence->lpVtbl->Release(g_fence);
+        g_fence->lpVtbl->Release(
+            g_fence
+        );
         g_fence = NULL;
     }
 
     if (g_command_list) {
-        g_command_list->lpVtbl->Release(g_command_list);
+        g_command_list->lpVtbl->Release(
+            g_command_list
+        );
         g_command_list = NULL;
     }
 
@@ -1299,12 +2220,16 @@ void dxgo_native_close(void) {
     }
 
     if (g_rtv_heap) {
-        g_rtv_heap->lpVtbl->Release(g_rtv_heap);
+        g_rtv_heap->lpVtbl->Release(
+            g_rtv_heap
+        );
         g_rtv_heap = NULL;
     }
 
     if (g_swap_chain) {
-        g_swap_chain->lpVtbl->Release(g_swap_chain);
+        g_swap_chain->lpVtbl->Release(
+            g_swap_chain
+        );
         g_swap_chain = NULL;
     }
 
@@ -1316,7 +2241,9 @@ void dxgo_native_close(void) {
     }
 
     if (g_device) {
-        g_device->lpVtbl->Release(g_device);
+        g_device->lpVtbl->Release(
+            g_device
+        );
         g_device = NULL;
     }
 
@@ -1324,4 +2251,7 @@ void dxgo_native_close(void) {
         DestroyWindow(g_hwnd);
         g_hwnd = NULL;
     }
+
+    g_vertex_count = 0;
+    g_frame_started = 0;
 }
