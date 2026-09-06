@@ -24,6 +24,14 @@ func nativeOpen() bool {
 	return C.dxgo_native_open() != 0
 }
 
+func nativeUpdate() {
+	C.dxgo_native_update()
+}
+
+func nativeClose() {
+	C.dxgo_native_close()
+}
+
 func nativeClear(r, g, b, a float32) {
 	C.dxgo_native_clear(
 		C.float(r),
@@ -153,35 +161,30 @@ func nativeFillTriangle(
 }
 
 func nativeDrawPolygon(points []float32, color Color) {
-	if len(points) == 0 {
+	if len(points) < 4 || len(points)%2 != 0 {
 		return
 	}
 
 	C.dxgo_native_draw_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points)/2),
+		C.int(len(points) / 2),
 		nativeColor(color),
 	)
 }
 
 func nativeFillPolygon(points []float32, color Color) {
-	if len(points) == 0 {
+	if len(points) < 6 || len(points)%2 != 0 {
 		return
 	}
 
 	C.dxgo_native_fill_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points)/2),
+		C.int(len(points) / 2),
 		nativeColor(color),
 	)
 }
 
-func nativeDrawText(
-	text string,
-	x, y float32,
-	size int,
-	color Color,
-) {
+func nativeDrawText(text string, x, y float32, size int, color Color) {
 	cText := C.CString(text)
 	defer C.free(unsafe.Pointer(cText))
 
@@ -195,27 +198,13 @@ func nativeDrawText(
 }
 
 func nativeKeyDown(key int) bool {
-	return C.dxgo_native_key_down(
-		C.int(key),
-	) != 0
+	return C.dxgo_native_key_down(C.int(key)) != 0
 }
 
 func nativeKeyPressed(key int) bool {
-	return C.dxgo_native_key_pressed(
-		C.int(key),
-	) != 0
+	return C.dxgo_native_key_pressed(C.int(key)) != 0
 }
 
 func nativeKeyReleased(key int) bool {
-	return C.dxgo_native_key_released(
-		C.int(key),
-	) != 0
-}
-
-func nativeUpdate() {
-	C.dxgo_native_update()
-}
-
-func nativeClose() {
-	C.dxgo_native_close()
+	return C.dxgo_native_key_released(C.int(key)) != 0
 }

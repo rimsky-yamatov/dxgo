@@ -15,6 +15,7 @@
 #define FRAME_COUNT 2
 #define MAX_VERTICES 65536
 #define CIRCLE_SEGMENTS 64
+#define DXGO_PI 3.14159265358979323846f
 
 typedef struct {
     float x;
@@ -26,6 +27,7 @@ typedef struct {
 } DXGOVertex;
 
 static HWND g_hwnd = NULL;
+
 static int g_width = 800;
 static int g_height = 600;
 
@@ -35,7 +37,11 @@ static ID3D12Device* g_device = NULL;
 static ID3D12CommandQueue* g_command_queue = NULL;
 static IDXGISwapChain3* g_swap_chain = NULL;
 static ID3D12DescriptorHeap* g_rtv_heap = NULL;
-static ID3D12Resource* g_render_targets[FRAME_COUNT] = {0};
+
+static ID3D12Resource* g_render_targets[FRAME_COUNT] = {
+    NULL,
+    NULL
+};
 
 static ID3D12CommandAllocator* g_command_allocator = NULL;
 static ID3D12GraphicsCommandList* g_command_list = NULL;
@@ -47,22 +53,25 @@ static UINT64 g_fence_value = 0;
 static UINT g_rtv_descriptor_size = 0;
 static UINT g_frame_index = 0;
 
-static unsigned char g_key_current[256];
-static unsigned char g_key_previous[256];
-
-static void update_keyboard(void);
-
 static ID3D12RootSignature* g_root_signature = NULL;
+
 static ID3D12PipelineState* g_point_pipeline_state = NULL;
 static ID3D12PipelineState* g_line_pipeline_state = NULL;
 static ID3D12PipelineState* g_triangle_pipeline_state = NULL;
 
 static ID3D12Resource* g_vertex_buffer = NULL;
 static DXGOVertex* g_vertex_data = NULL;
+
 static D3D12_VERTEX_BUFFER_VIEW g_vertex_buffer_view;
 
 static UINT g_vertex_count = 0;
 static int g_frame_started = 0;
+static int g_initialized = 0;
+
+static unsigned char g_key_current[256];
+static unsigned char g_key_previous[256];
+
+static void update_keyboard(void);
 
 static LRESULT CALLBACK dxgo_wnd_proc(
     HWND hwnd,
@@ -76,20 +85,8 @@ static LRESULT CALLBACK dxgo_wnd_proc(
             PostQuitMessage(0);
             return 0;
 
-        case WM_SIZE:
-            if (lparam != 0) {
-                int width = (int)LOWORD(lparam);
-                int height = (int)HIWORD(lparam);
-
-                if (width > 0) {
-                    g_width = width;
-                }
-
-                if (height > 0) {
-                    g_height = height;
-                }
-            }
-            return 0;
+        default:
+            break;
     }
 
     return DefWindowProcA(
@@ -100,9 +97,12 @@ static LRESULT CALLBACK dxgo_wnd_proc(
     );
 }
 
-static int create_window(const char* title)
+static int create_window(
+    const char* title
+)
 {
-    HINSTANCE instance = GetModuleHandleA(NULL);
+    HINSTANCE instance =
+        GetModuleHandleA(NULL);
 
     memset(
         &g_window_class,
@@ -138,15 +138,17 @@ static int create_window(const char* title)
     rect.right = g_width;
     rect.bottom = g_height;
 
-    AdjustWindowRect(
+    if (!AdjustWindowRect(
         &rect,
         WS_OVERLAPPEDWINDOW,
         FALSE
-    );
+    )) {
+        return 0;
+    }
 
     g_hwnd = CreateWindowA(
         "DXGOWindowClass",
-        title,
+        title ? title : "dxgo",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -174,9 +176,11 @@ static int create_window(const char* title)
 
 static int create_device(void)
 {
+    HRESULT hr;
+
     IDXGIFactory4* factory = NULL;
 
-    HRESULT hr = CreateDXGIFactory2(
+    hr = CreateDXGIFactory2(
         0,
         &IID_IDXGIFactory4,
         (void**)&factory
@@ -212,12 +216,13 @@ static int create_device(void)
     queue_desc.Flags =
         D3D12_COMMAND_QUEUE_FLAG_NONE;
 
-    hr = g_device->lpVtbl->CreateCommandQueue(
-        g_device,
-        &queue_desc,
-        &IID_ID3D12CommandQueue,
-        (void**)&g_command_queue
-    );
+    hr =
+        g_device->lpVtbl->CreateCommandQueue(
+            g_device,
+            &queue_desc,
+            &IID_ID3D12CommandQueue,
+            (void**)&g_command_queue
+        );
 
     factory->lpVtbl->Release(factory);
 
@@ -230,9 +235,11 @@ static int create_device(void)
 
 static int create_swap_chain(void)
 {
+    HRESULT hr;
+
     IDXGIFactory4* factory = NULL;
 
-    HRESULT hr = CreateDXGIFactory2(
+    hr = CreateDXGIFactory2(
         0,
         &IID_IDXGIFactory4,
         (void**)&factory
@@ -250,8 +257,8 @@ static int create_swap_chain(void)
         sizeof(desc)
     );
 
-    desc.Width = g_width;
-    desc.Height = g_height;
+    desc.Width = (UINT)g_width;
+    desc.Height = (UINT)g_height;
     desc.Format =
         DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.Stereo = FALSE;
@@ -270,26 +277,28 @@ static int create_swap_chain(void)
 
     IDXGISwapChain1* swap_chain1 = NULL;
 
-    hr = factory->lpVtbl->CreateSwapChainForHwnd(
-        factory,
-        (IUnknown*)g_command_queue,
-        g_hwnd,
-        &desc,
-        NULL,
-        NULL,
-        &swap_chain1
-    );
+    hr =
+        factory->lpVtbl->CreateSwapChainForHwnd(
+            factory,
+            (IUnknown*)g_command_queue,
+            g_hwnd,
+            &desc,
+            NULL,
+            NULL,
+            &swap_chain1
+        );
 
     if (FAILED(hr)) {
         factory->lpVtbl->Release(factory);
         return 0;
     }
 
-    hr = swap_chain1->lpVtbl->QueryInterface(
-        swap_chain1,
-        &IID_IDXGISwapChain3,
-        (void**)&g_swap_chain
-    );
+    hr =
+        swap_chain1->lpVtbl->QueryInterface(
+            swap_chain1,
+            &IID_IDXGISwapChain3,
+            (void**)&g_swap_chain
+        );
 
     swap_chain1->lpVtbl->Release(
         swap_chain1
@@ -313,6 +322,8 @@ static int create_swap_chain(void)
 
 static int create_rtv_heap(void)
 {
+    HRESULT hr;
+
     D3D12_DESCRIPTOR_HEAP_DESC desc;
 
     memset(
@@ -330,7 +341,7 @@ static int create_rtv_heap(void)
     desc.Flags =
         D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-    HRESULT hr =
+    hr =
         g_device->lpVtbl->CreateDescriptorHeap(
             g_device,
             &desc,
@@ -356,12 +367,13 @@ static int create_rtv_heap(void)
     );
 
     for (UINT i = 0; i < FRAME_COUNT; i++) {
-        hr = g_swap_chain->lpVtbl->GetBuffer(
-            g_swap_chain,
-            i,
-            &IID_ID3D12Resource,
-            (void**)&g_render_targets[i]
-        );
+        hr =
+            g_swap_chain->lpVtbl->GetBuffer(
+                g_swap_chain,
+                i,
+                &IID_ID3D12Resource,
+                (void**)&g_render_targets[i]
+            );
 
         if (FAILED(hr)) {
             return 0;
@@ -387,7 +399,9 @@ static int create_rtv_heap(void)
 
 static int create_command_objects(void)
 {
-    HRESULT hr =
+    HRESULT hr;
+
+    hr =
         g_device->lpVtbl->CreateCommandAllocator(
             g_device,
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -428,7 +442,9 @@ static int create_command_objects(void)
 
 static int create_fence(void)
 {
-    HRESULT hr =
+    HRESULT hr;
+
+    hr =
         g_device->lpVtbl->CreateFence(
             g_device,
             0,
@@ -465,19 +481,20 @@ static int compile_shader(
 {
     ID3DBlob* error_blob = NULL;
 
-    HRESULT hr = D3DCompile(
-        source,
-        strlen(source),
-        NULL,
-        NULL,
-        NULL,
-        entry,
-        target,
-        D3DCOMPILE_OPTIMIZATION_LEVEL3,
-        0,
-        blob,
-        &error_blob
-    );
+    HRESULT hr =
+        D3DCompile(
+            source,
+            strlen(source),
+            NULL,
+            NULL,
+            NULL,
+            entry,
+            target,
+            D3DCOMPILE_OPTIMIZATION_LEVEL3,
+            0,
+            blob,
+            &error_blob
+        );
 
     if (error_blob) {
         error_blob->lpVtbl->Release(
@@ -962,6 +979,13 @@ static int create_vertex_buffer(void)
         return 0;
     }
 
+    memset(
+        g_vertex_data,
+        0,
+        sizeof(DXGOVertex) *
+        MAX_VERTICES
+    );
+
     g_vertex_buffer_view.BufferLocation =
         g_vertex_buffer->lpVtbl->GetGPUVirtualAddress(
             g_vertex_buffer
@@ -979,35 +1003,57 @@ static int create_vertex_buffer(void)
 
 static void wait_gpu(void)
 {
+    if (!g_command_queue ||
+        !g_fence ||
+        !g_fence_event) {
+        return;
+    }
+
     g_fence_value++;
 
-    g_command_queue->lpVtbl->Signal(
-        g_command_queue,
-        g_fence,
-        g_fence_value
-    );
+    if (FAILED(
+        g_command_queue->lpVtbl->Signal(
+            g_command_queue,
+            g_fence,
+            g_fence_value
+        )
+    )) {
+        return;
+    }
 
     if (
         g_fence->lpVtbl->GetCompletedValue(
             g_fence
         ) < g_fence_value
     ) {
-        g_fence->lpVtbl->SetEventOnCompletion(
-            g_fence,
-            g_fence_value,
-            g_fence_event
-        );
-
-        WaitForSingleObject(
-            g_fence_event,
-            INFINITE
-        );
+        if (SUCCEEDED(
+            g_fence->lpVtbl->SetEventOnCompletion(
+                g_fence,
+                g_fence_value,
+                g_fence_event
+            )
+        )) {
+            WaitForSingleObject(
+                g_fence_event,
+                INFINITE
+            );
+        }
     }
 }
 
 static D3D12_CPU_DESCRIPTOR_HANDLE current_rtv(void)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE handle;
+
+    memset(
+        &handle,
+        0,
+        sizeof(handle)
+    );
+
+    if (!g_rtv_heap) {
+        return handle;
+    }
 
     g_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(
         g_rtv_heap,
@@ -1023,21 +1069,40 @@ static D3D12_CPU_DESCRIPTOR_HANDLE current_rtv(void)
 
 static void begin_frame(void)
 {
+    if (!g_initialized) {
+        return;
+    }
+
     if (g_frame_started) {
+        return;
+    }
+
+    if (!g_command_allocator ||
+        !g_command_list ||
+        !g_vertex_buffer ||
+        !g_vertex_data) {
         return;
     }
 
     g_vertex_count = 0;
 
-    g_command_allocator->lpVtbl->Reset(
-        g_command_allocator
-    );
+    if (FAILED(
+        g_command_allocator->lpVtbl->Reset(
+            g_command_allocator
+        )
+    )) {
+        return;
+    }
 
-    g_command_list->lpVtbl->Reset(
-        g_command_list,
-        g_command_allocator,
-        g_triangle_pipeline_state
-    );
+    if (FAILED(
+        g_command_list->lpVtbl->Reset(
+            g_command_list,
+            g_command_allocator,
+            g_triangle_pipeline_state
+        )
+    )) {
+        return;
+    }
 
     D3D12_VIEWPORT viewport;
 
@@ -1150,6 +1215,10 @@ static int add_vertex(
     float a
 )
 {
+    if (!g_frame_started) {
+        return 0;
+    }
+
     if (g_vertex_count >= MAX_VERTICES) {
         return 0;
     }
@@ -1175,6 +1244,14 @@ static void draw_primitive(
     UINT count
 )
 {
+    if (!g_frame_started) {
+        return;
+    }
+
+    if (count == 0) {
+        return;
+    }
+
     ID3D12PipelineState* pipeline =
         g_triangle_pipeline_state;
 
@@ -1190,6 +1267,10 @@ static void draw_primitive(
     ) {
         pipeline =
             g_line_pipeline_state;
+    }
+
+    if (!pipeline) {
+        return;
     }
 
     g_command_list->lpVtbl->SetPipelineState(
@@ -1211,22 +1292,30 @@ static void draw_primitive(
     );
 }
 
-static float color_r(DXGOColor color)
+static float color_r(
+    DXGOColor color
+)
 {
     return (float)color.r / 255.0f;
 }
 
-static float color_g(DXGOColor color)
+static float color_g(
+    DXGOColor color
+)
 {
     return (float)color.g / 255.0f;
 }
 
-static float color_b(DXGOColor color)
+static float color_b(
+    DXGOColor color
+)
 {
     return (float)color.b / 255.0f;
 }
 
-static float color_a(DXGOColor color)
+static float color_a(
+    DXGOColor color
+)
 {
     return (float)color.a / 255.0f;
 }
@@ -1237,44 +1326,79 @@ int dxgo_native_init(
     int height
 )
 {
+    if (g_initialized) {
+        return 1;
+    }
+
+    if (width <= 0 ||
+        height <= 0) {
+        return 0;
+    }
+
     g_width = width;
     g_height = height;
+
+    memset(
+        g_key_current,
+        0,
+        sizeof(g_key_current)
+    );
+
+    memset(
+        g_key_previous,
+        0,
+        sizeof(g_key_previous)
+    );
 
     if (!create_window(title)) {
         return 0;
     }
 
     if (!create_device()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_swap_chain()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_rtv_heap()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_command_objects()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_fence()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_root_signature()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_pipeline_states()) {
+        dxgo_native_close();
         return 0;
     }
 
     if (!create_vertex_buffer()) {
+        dxgo_native_close();
         return 0;
     }
+
+    g_vertex_count = 0;
+    g_frame_started = 0;
+    g_fence_value = 0;
+
+    g_initialized = 1;
 
     return 1;
 }
@@ -1282,6 +1406,12 @@ int dxgo_native_init(
 int dxgo_native_open(void)
 {
     MSG message;
+
+    if (!g_initialized ||
+        !g_hwnd ||
+        !IsWindow(g_hwnd)) {
+        return 0;
+    }
 
     while (
         PeekMessageA(
@@ -1300,10 +1430,14 @@ int dxgo_native_open(void)
         DispatchMessageA(&message);
     }
 
+    if (!g_hwnd ||
+        !IsWindow(g_hwnd)) {
+        return 0;
+    }
+
     update_keyboard();
 
-    return g_hwnd != NULL &&
-           IsWindow(g_hwnd);
+    return 1;
 }
 
 void dxgo_native_clear(
@@ -1313,7 +1447,15 @@ void dxgo_native_clear(
     float a
 )
 {
+    if (!g_initialized) {
+        return;
+    }
+
     begin_frame();
+
+    if (!g_frame_started) {
+        return;
+    }
 
     float color[4];
 
@@ -1342,7 +1484,8 @@ void dxgo_native_draw_point(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     if (!add_vertex(
         x,
@@ -1372,7 +1515,8 @@ void dxgo_native_draw_line(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     if (!add_vertex(
         x1,
@@ -1413,20 +1557,17 @@ void dxgo_native_draw_rect(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    if (!add_vertex(x, y, r, g, b, a)) return;
-    if (!add_vertex(x + width, y, r, g, b, a)) return;
-
-    if (!add_vertex(x + width, y, r, g, b, a)) return;
     if (!add_vertex(
-        x + width,
-        y + height,
+        x,
+        y,
         r,
         g,
         b,
@@ -1435,58 +1576,12 @@ void dxgo_native_draw_rect(
 
     if (!add_vertex(
         x + width,
-        y + height,
+        y,
         r,
         g,
         b,
         a
     )) return;
-
-    if (!add_vertex(
-        x,
-        y + height,
-        r,
-        g,
-        b,
-        a
-    )) return;
-
-    if (!add_vertex(
-        x,
-        y + height,
-        r,
-        g,
-        b,
-        a
-    )) return;
-
-    if (!add_vertex(x, y, r, g, b, a)) return;
-
-    draw_primitive(
-        D3D_PRIMITIVE_TOPOLOGY_LINELIST,
-        start,
-        8
-    );
-}
-
-void dxgo_native_fill_rect(
-    float x,
-    float y,
-    float width,
-    float height,
-    DXGOColor color
-)
-{
-    begin_frame();
-
-    UINT start = g_vertex_count;
-
-    float r = color_r(color);
-    float g = color_g(color);
-    float b = color_b(color);
-    float a = color_a(color);
-
-    if (!add_vertex(x, y, r, g, b, a)) return;
 
     if (!add_vertex(
         x + width,
@@ -1506,7 +1601,102 @@ void dxgo_native_fill_rect(
         a
     )) return;
 
-    if (!add_vertex(x, y, r, g, b, a)) return;
+    if (!add_vertex(
+        x + width,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x,
+        y,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    draw_primitive(
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST,
+        start,
+        8
+    );
+}
+
+void dxgo_native_fill_rect(
+    float x,
+    float y,
+    float width,
+    float height,
+    DXGOColor color
+)
+{
+    begin_frame();
+
+    UINT start =
+        g_vertex_count;
+
+    float r = color_r(color);
+    float g = color_g(color);
+    float b = color_b(color);
+    float a = color_a(color);
+
+    if (!add_vertex(
+        x,
+        y,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x + width,
+        y,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x + width,
+        y + height,
+        r,
+        g,
+        b,
+        a
+    )) return;
+
+    if (!add_vertex(
+        x,
+        y,
+        r,
+        g,
+        b,
+        a
+    )) return;
 
     if (!add_vertex(
         x + width,
@@ -1542,25 +1732,29 @@ void dxgo_native_draw_circle(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+    for (int i = 0;
+         i < CIRCLE_SEGMENTS;
+         i++) {
+
         float angle1 =
             (float)i /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         float angle2 =
             (float)(i + 1) /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         if (!add_vertex(
             x + cosf(angle1) * radius,
@@ -1601,25 +1795,29 @@ void dxgo_native_fill_circle(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+    for (int i = 0;
+         i < CIRCLE_SEGMENTS;
+         i++) {
+
         float angle1 =
             (float)i /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         float angle2 =
             (float)(i + 1) /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         if (!add_vertex(
             x,
@@ -1672,25 +1870,29 @@ void dxgo_native_draw_ellipse(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+    for (int i = 0;
+         i < CIRCLE_SEGMENTS;
+         i++) {
+
         float angle1 =
             (float)i /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         float angle2 =
             (float)(i + 1) /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         if (!add_vertex(
             x + cosf(angle1) * rx,
@@ -1732,25 +1934,29 @@ void dxgo_native_fill_ellipse(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+    for (int i = 0;
+         i < CIRCLE_SEGMENTS;
+         i++) {
+
         float angle1 =
             (float)i /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         float angle2 =
             (float)(i + 1) /
             CIRCLE_SEGMENTS *
             2.0f *
-            (float)M_PI;
+            DXGO_PI;
 
         if (!add_vertex(
             x,
@@ -1805,7 +2011,8 @@ void dxgo_native_draw_triangle(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
@@ -1885,7 +2092,8 @@ void dxgo_native_fill_triangle(
 {
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
@@ -1932,21 +2140,27 @@ void dxgo_native_draw_polygon(
     DXGOColor color
 )
 {
-    if (!points || count < 2) {
+    if (!points ||
+        count < 2) {
         return;
     }
 
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 0; i < count; i++) {
-        int next = (i + 1) % count;
+    for (int i = 0;
+         i < count;
+         i++) {
+
+        int next =
+            (i + 1) % count;
 
         if (!add_vertex(
             points[i * 2],
@@ -1974,7 +2188,7 @@ void dxgo_native_draw_polygon(
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_LINELIST,
         start,
-        count * 2
+        (UINT)count * 2
     );
 }
 
@@ -1984,20 +2198,25 @@ void dxgo_native_fill_polygon(
     DXGOColor color
 )
 {
-    if (!points || count < 3) {
+    if (!points ||
+        count < 3) {
         return;
     }
 
     begin_frame();
 
-    UINT start = g_vertex_count;
+    UINT start =
+        g_vertex_count;
 
     float r = color_r(color);
     float g = color_g(color);
     float b = color_b(color);
     float a = color_a(color);
 
-    for (int i = 1; i < count - 1; i++) {
+    for (int i = 1;
+         i < count - 1;
+         i++) {
+
         if (!add_vertex(
             points[0],
             points[1],
@@ -2035,23 +2254,29 @@ void dxgo_native_fill_polygon(
     draw_primitive(
         D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
         start,
-        (count - 2) * 3
+        (UINT)(count - 2) * 3
     );
 }
 
 void dxgo_native_update(void)
 {
+    if (!g_initialized) {
+        return;
+    }
+
     if (!g_frame_started) {
         begin_frame();
     }
 
-    if (g_vertex_count > 0) {
-        D3D12_RANGE range;
+    if (!g_frame_started) {
+        return;
+    }
 
-        range.Begin = 0;
-        range.End =
-            sizeof(DXGOVertex) *
-            g_vertex_count;
+    if (g_vertex_count > 0) {
+        D3D12_RANGE read_range;
+
+        read_range.Begin = 0;
+        read_range.End = 0;
 
         void* mapped = NULL;
 
@@ -2059,11 +2284,13 @@ void dxgo_native_update(void)
             g_vertex_buffer->lpVtbl->Map(
                 g_vertex_buffer,
                 0,
-                &range,
+                &read_range,
                 &mapped
             );
 
-        if (SUCCEEDED(hr)) {
+        if (SUCCEEDED(hr) &&
+            mapped) {
+
             memcpy(
                 mapped,
                 g_vertex_data,
@@ -2074,7 +2301,7 @@ void dxgo_native_update(void)
             g_vertex_buffer->lpVtbl->Unmap(
                 g_vertex_buffer,
                 0,
-                &range
+                NULL
             );
         }
     }
@@ -2111,9 +2338,15 @@ void dxgo_native_update(void)
         &barrier
     );
 
-    g_command_list->lpVtbl->Close(
-        g_command_list
-    );
+    if (FAILED(
+        g_command_list->lpVtbl->Close(
+            g_command_list
+        )
+    )) {
+        g_frame_started = 0;
+        g_vertex_count = 0;
+        return;
+    }
 
     ID3D12CommandList* lists[1];
 
@@ -2126,28 +2359,50 @@ void dxgo_native_update(void)
         lists
     );
 
-    g_swap_chain->lpVtbl->Present(
-        g_swap_chain,
-        1,
-        0
-    );
+    HRESULT present_result =
+        g_swap_chain->lpVtbl->Present(
+            g_swap_chain,
+            1,
+            0
+        );
 
     wait_gpu();
 
-    g_frame_index =
-        g_swap_chain->lpVtbl->GetCurrentBackBufferIndex(
-            g_swap_chain
-        );
+    if (SUCCEEDED(present_result)) {
+        g_frame_index =
+            g_swap_chain->lpVtbl->GetCurrentBackBufferIndex(
+                g_swap_chain
+            );
+    }
 
     g_vertex_count = 0;
     g_frame_started = 0;
+
+    if (g_hwnd &&
+        IsWindow(g_hwnd)) {
+        UpdateWindow(g_hwnd);
+    }
 }
 
 void dxgo_native_close(void)
 {
+    if (!g_hwnd &&
+        !g_device &&
+        !g_swap_chain) {
+        g_initialized = 0;
+        return;
+    }
+
+    if (g_frame_started &&
+        g_command_list) {
+
+        dxgo_native_update();
+    }
+
     if (g_command_queue &&
         g_fence &&
         g_fence_event) {
+
         wait_gpu();
     }
 
@@ -2162,6 +2417,12 @@ void dxgo_native_close(void)
         );
         g_vertex_buffer = NULL;
     }
+
+    memset(
+        &g_vertex_buffer_view,
+        0,
+        sizeof(g_vertex_buffer_view)
+    );
 
     if (g_point_pipeline_state) {
         g_point_pipeline_state->lpVtbl->Release(
@@ -2192,7 +2453,9 @@ void dxgo_native_close(void)
     }
 
     if (g_fence_event) {
-        CloseHandle(g_fence_event);
+        CloseHandle(
+            g_fence_event
+        );
         g_fence_event = NULL;
     }
 
@@ -2217,7 +2480,10 @@ void dxgo_native_close(void)
         g_command_allocator = NULL;
     }
 
-    for (int i = 0; i < FRAME_COUNT; i++) {
+    for (int i = 0;
+         i < FRAME_COUNT;
+         i++) {
+
         if (g_render_targets[i]) {
             g_render_targets[i]->lpVtbl->Release(
                 g_render_targets[i]
@@ -2255,12 +2521,30 @@ void dxgo_native_close(void)
     }
 
     if (g_hwnd) {
-        DestroyWindow(g_hwnd);
+        DestroyWindow(
+            g_hwnd
+        );
         g_hwnd = NULL;
     }
 
     g_vertex_count = 0;
     g_frame_started = 0;
+    g_fence_value = 0;
+    g_frame_index = 0;
+    g_rtv_descriptor_size = 0;
+    g_initialized = 0;
+
+    memset(
+        g_key_current,
+        0,
+        sizeof(g_key_current)
+    );
+
+    memset(
+        g_key_previous,
+        0,
+        sizeof(g_key_previous)
+    );
 }
 
 void dxgo_native_draw_text(
@@ -2271,40 +2555,50 @@ void dxgo_native_draw_text(
     DXGOColor color
 )
 {
-    if (!text || !g_hwnd || size <= 0) {
+    if (!text ||
+        !g_hwnd ||
+        size <= 0) {
         return;
     }
 
-    HDC dc = GetDC(g_hwnd);
+    HDC dc =
+        GetDC(g_hwnd);
 
     if (!dc) {
         return;
     }
 
-    HFONT font = CreateFontA(
-        -size,
-        0,
-        0,
-        0,
-        FW_NORMAL,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        DEFAULT_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        "Segoe UI"
-    );
+    HFONT font =
+        CreateFontA(
+            -size,
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            "Segoe UI"
+        );
 
     if (!font) {
-        ReleaseDC(g_hwnd, dc);
+        ReleaseDC(
+            g_hwnd,
+            dc
+        );
         return;
     }
 
     HFONT old_font =
-        (HFONT)SelectObject(dc, font);
+        (HFONT)SelectObject(
+            dc,
+            font
+        );
 
     SetBkMode(
         dc,
@@ -2322,17 +2616,27 @@ void dxgo_native_draw_text(
 
     RECT rect;
 
-    rect.left = (LONG)x;
-    rect.top = (LONG)y;
-    rect.right = rect.left + 4096;
-    rect.bottom = rect.top + size * 2;
+    rect.left =
+        (LONG)x;
+
+    rect.top =
+        (LONG)y;
+
+    rect.right =
+        rect.left + 4096;
+
+    rect.bottom =
+        rect.top + size * 2;
 
     DrawTextA(
         dc,
         text,
         -1,
         &rect,
-        DT_LEFT | DT_TOP | DT_NOCLIP
+        DT_LEFT |
+        DT_TOP |
+        DT_NOCLIP |
+        DT_SINGLELINE
     );
 
     SelectObject(
@@ -2340,7 +2644,9 @@ void dxgo_native_draw_text(
         old_font
     );
 
-    DeleteObject(font);
+    DeleteObject(
+        font
+    );
 
     ReleaseDC(
         g_hwnd,
@@ -2356,7 +2662,10 @@ static void update_keyboard(void)
         sizeof(g_key_current)
     );
 
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0;
+         i < 256;
+         i++) {
+
         SHORT state =
             GetAsyncKeyState(i);
 
@@ -2365,31 +2674,42 @@ static void update_keyboard(void)
     }
 }
 
-int dxgo_native_key_down(int key)
+int dxgo_native_key_down(
+    int key
+)
 {
-    if (key < 0 || key >= 256) {
+    if (key < 0 ||
+        key >= 256) {
         return 0;
     }
 
     return g_key_current[key] != 0;
 }
 
-int dxgo_native_key_pressed(int key)
+int dxgo_native_key_pressed(
+    int key
+)
 {
-    if (key < 0 || key >= 256) {
+    if (key < 0 ||
+        key >= 256) {
         return 0;
     }
 
-    return g_key_current[key] != 0 &&
-           g_key_previous[key] == 0;
+    return
+        g_key_current[key] != 0 &&
+        g_key_previous[key] == 0;
 }
 
-int dxgo_native_key_released(int key)
+int dxgo_native_key_released(
+    int key
+)
 {
-    if (key < 0 || key >= 256) {
+    if (key < 0 ||
+        key >= 256) {
         return 0;
     }
 
-    return g_key_current[key] == 0 &&
-           g_key_previous[key] != 0;
+    return
+        g_key_current[key] == 0 &&
+        g_key_previous[key] != 0;
 }
