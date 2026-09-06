@@ -56,14 +56,14 @@ const (
 	KeyZ Key = 0x5A
 )
 
-func KeyDown(key Key) bool {
+func IsKeyDown(key Key) bool {
 	return nativeKeyDown(int(key))
 }
 
-func KeyPressed(key Key) bool {
+func IsKeyPressed(key Key) bool {
 	return nativeKeyPressed(int(key))
 }
 
-func KeyReleased(key Key) bool {
+func IsKeyReleased(key Key) bool {
 	return nativeKeyReleased(int(key))
 }
