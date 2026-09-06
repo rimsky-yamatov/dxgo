@@ -25,6 +25,9 @@ typedef struct {
     float a;
 } DXGOVertex;
 
+static unsigned char g_key_current[256];
+static unsigned char g_key_previous[256];
+
 static HWND g_hwnd = NULL;
 static int g_width = 800;
 static int g_height = 600;
@@ -1295,6 +1298,8 @@ int dxgo_native_open(void)
         DispatchMessageA(&message);
     }
 
+    update_keyboard();
+
     return g_hwnd != NULL &&
            IsWindow(g_hwnd);
 }
@@ -2254,4 +2259,135 @@ void dxgo_native_close(void)
 
     g_vertex_count = 0;
     g_frame_started = 0;
+}
+
+void dxgo_native_draw_text(
+    const char* text,
+    float x,
+    float y,
+    int size,
+    DXGOColor color
+)
+{
+    if (!text || !g_hwnd || size <= 0) {
+        return;
+    }
+
+    HDC dc = GetDC(g_hwnd);
+
+    if (!dc) {
+        return;
+    }
+
+    HFONT font = CreateFontA(
+        -size,
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        "Segoe UI"
+    );
+
+    if (!font) {
+        ReleaseDC(g_hwnd, dc);
+        return;
+    }
+
+    HFONT old_font =
+        (HFONT)SelectObject(dc, font);
+
+    SetBkMode(
+        dc,
+        TRANSPARENT
+    );
+
+    SetTextColor(
+        dc,
+        RGB(
+            color.r,
+            color.g,
+            color.b
+        )
+    );
+
+    RECT rect;
+
+    rect.left = (LONG)x;
+    rect.top = (LONG)y;
+    rect.right = rect.left + 4096;
+    rect.bottom = rect.top + size * 2;
+
+    DrawTextA(
+        dc,
+        text,
+        -1,
+        &rect,
+        DT_LEFT | DT_TOP | DT_NOCLIP
+    );
+
+    SelectObject(
+        dc,
+        old_font
+    );
+
+    DeleteObject(font);
+
+    ReleaseDC(
+        g_hwnd,
+        dc
+    );
+}
+
+static void update_keyboard(void)
+{
+    memcpy(
+        g_key_previous,
+        g_key_current,
+        sizeof(g_key_current)
+    );
+
+    for (int i = 0; i < 256; i++) {
+        SHORT state =
+            GetAsyncKeyState(i);
+
+        g_key_current[i] =
+            (state & 0x8000) != 0;
+    }
+}
+
+int dxgo_native_key_down(int key)
+{
+    if (key < 0 || key >= 256) {
+        return 0;
+    }
+
+    return g_key_current[key] != 0;
+}
+
+int dxgo_native_key_pressed(int key)
+{
+    if (key < 0 || key >= 256) {
+        return 0;
+    }
+
+    return g_key_current[key] != 0 &&
+           g_key_previous[key] == 0;
+}
+
+int dxgo_native_key_released(int key)
+{
+    if (key < 0 || key >= 256) {
+        return 0;
+    }
+
+    return g_key_current[key] == 0 &&
+           g_key_previous[key] != 0;
 }
