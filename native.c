@@ -25,9 +25,6 @@ typedef struct {
     float a;
 } DXGOVertex;
 
-static unsigned char g_key_current[256];
-static unsigned char g_key_previous[256];
-
 static HWND g_hwnd = NULL;
 static int g_width = 800;
 static int g_height = 600;
@@ -49,6 +46,11 @@ static UINT64 g_fence_value = 0;
 
 static UINT g_rtv_descriptor_size = 0;
 static UINT g_frame_index = 0;
+
+static unsigned char g_key_current[256];
+static unsigned char g_key_previous[256];
+
+static void update_keyboard(void);
 
 static ID3D12RootSignature* g_root_signature = NULL;
 static ID3D12PipelineState* g_point_pipeline_state = NULL;
