@@ -6,6 +6,7 @@ func Window(title string, width, height int) *GameWindow {
 	if !nativeInit(title, width, height) {
 		return nil
 	}
+
 	return &GameWindow{}
 }
 
