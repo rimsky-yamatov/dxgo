@@ -190,7 +190,3 @@ math — handy for movement, hitboxes, and simple physics.
 - No audio.
 - The font atlas covers printable ASCII only (no accented characters
   or non-Latin scripts).
-
-## License
-
-Add your preferred license here.
