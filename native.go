@@ -167,7 +167,7 @@ func nativeDrawPolygon(points []float32, color Color) {
 
 	C.dxgo_native_draw_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points) / 2),
+		C.int(len(points)/2),
 		nativeColor(color),
 	)
 }
@@ -179,7 +179,7 @@ func nativeFillPolygon(points []float32, color Color) {
 
 	C.dxgo_native_fill_polygon(
 		(*C.float)(unsafe.Pointer(&points[0])),
-		C.int(len(points) / 2),
+		C.int(len(points)/2),
 		nativeColor(color),
 	)
 }
@@ -207,4 +207,61 @@ func nativeKeyPressed(key int) bool {
 
 func nativeKeyReleased(key int) bool {
 	return C.dxgo_native_key_released(C.int(key)) != 0
+}
+
+func nativeSetTitle(title string) {
+	cTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(cTitle))
+
+	C.dxgo_native_set_title(cTitle)
+}
+
+func nativeShowCursor(show bool) {
+	value := C.int(0)
+	if show {
+		value = C.int(1)
+	}
+
+	C.dxgo_native_show_cursor(value)
+}
+
+func nativeIsFocused() bool {
+	return C.dxgo_native_is_focused() != 0
+}
+
+func nativeSetVSync(enabled bool) {
+	value := C.int(0)
+	if enabled {
+		value = C.int(1)
+	}
+
+	C.dxgo_native_set_vsync(value)
+}
+
+func nativeMouseX() float32 {
+	return float32(C.dxgo_native_mouse_x())
+}
+
+func nativeMouseY() float32 {
+	return float32(C.dxgo_native_mouse_y())
+}
+
+func nativeMouseWheel() float32 {
+	return float32(C.dxgo_native_mouse_wheel())
+}
+
+func nativeMeasureText(text string, size int) (int, int) {
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	var width, height C.int
+
+	C.dxgo_native_measure_text(
+		cText,
+		C.int(size),
+		&width,
+		&height,
+	)
+
+	return int(width), int(height)
 }

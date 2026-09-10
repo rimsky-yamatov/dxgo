@@ -121,4 +121,20 @@ int dxgo_native_key_down(int key);
 int dxgo_native_key_pressed(int key);
 int dxgo_native_key_released(int key);
 
+void dxgo_native_set_title(const char* title);
+void dxgo_native_show_cursor(int show);
+int dxgo_native_is_focused(void);
+void dxgo_native_set_vsync(int enabled);
+
+float dxgo_native_mouse_x(void);
+float dxgo_native_mouse_y(void);
+float dxgo_native_mouse_wheel(void);
+
+void dxgo_native_measure_text(
+    const char* text,
+    int size,
+    int* out_width,
+    int* out_height
+);
+
 #endif
